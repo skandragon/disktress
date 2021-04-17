@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 )
 
@@ -18,10 +19,10 @@ var (
 	mode       = flag.String("mode", "rw", "rw = read+verify, r = verify, w = write")
 	iterations = flag.Int64("iterations", 1, "number of times to repeat the test")
 
-	buffer []byte
+	sourcecount int64
 )
 
-func makeblock(seed string, blocksize int64, block int64) {
+func makeblock(seed string, blocksize int64, block int64) []byte {
 	sha := sha256.New()
 	_, err := sha.Write([]byte(seed))
 	if err != nil {
@@ -31,37 +32,52 @@ func makeblock(seed string, blocksize int64, block int64) {
 	if err != nil {
 		panic(err)
 	}
+	buffer := make([]byte, blocksize)
 	for i := int64(0); i < blocksize/(256/8); i++ {
 		off := i * 256 / 8
 		b := sha.Sum([]byte{})
 		copy(buffer[off:], b)
 		sha.Write(b)
 	}
+	return buffer
 }
 
-func writeblock(f *os.File, seed string, blocksize int64, block int64) {
-	makeblock(seed, blocksize, block)
-	written, err := f.WriteAt(buffer, block*blocksize)
+func writeblock(f *os.File, sources []chan []byte, blocksize int64, block int64) {
+	data := <-sources[block%sourcecount]
+	written, err := f.WriteAt(data, block*blocksize)
 	if err != nil {
 		panic(err)
 	}
-	if written != len(buffer) {
-		panic(fmt.Errorf("partial write (%d written, expected to write %d", written, len(buffer)))
+	if written != len(data) {
+		panic(fmt.Errorf("partial write (%d written, expected to write %d", written, len(data)))
 	}
 }
 
-func checkblock(f *os.File, seed string, blocksize int64, block int64) {
-	makeblock(seed, blocksize, block)
-	contents := make([]byte, len(buffer))
+func checkblock(f *os.File, sources []chan []byte, blocksize int64, block int64) {
+	data := <-sources[block%sourcecount]
+	contents := make([]byte, len(data))
 	read, err := f.ReadAt(contents, block*blocksize)
-	if read != len(buffer) {
-		panic(fmt.Errorf("partial read (%d read, expected to read %d", read, len(buffer)))
+	if read != len(data) {
+		panic(fmt.Errorf("partial read (%d read, expected to read %d", read, len(data)))
 	}
 	if err != nil {
 		panic(err)
 	}
-	if !bytes.Equal(buffer, contents) {
+	if !bytes.Equal(data, contents) {
 		panic(fmt.Errorf("block %d failed to compare", block))
+	}
+}
+
+func generator(c chan []byte, block int64, count int64) {
+	for i := block; i < count; i += sourcecount {
+		c <- makeblock(*seed, *blocksize, block)
+	}
+	close(c)
+}
+
+func startGenerators(sources []chan []byte, startblock int64, count int64) {
+	for i := int64(0); i < sourcecount; i++ {
+		go generator(sources[(int64(i)+startblock)%sourcecount], startblock+int64(i), count)
 	}
 }
 
@@ -78,7 +94,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	buffer = make([]byte, *blocksize)
+	sourcecount = int64(runtime.NumCPU())
+	if sourcecount > *blocks {
+		sourcecount = *blocks
+	}
+
 	interval := int64(10000)
 	if *blocksize > 100000 {
 		interval = 100
@@ -97,9 +117,14 @@ func main() {
 		if *mode == "rw" || *mode == "w" {
 			var accum time.Duration
 			blockCount := int64(0)
+			sources := make([]chan []byte, sourcecount)
+			for i := int64(0); i < sourcecount; i++ {
+				sources[i] = make(chan []byte)
+			}
+			startGenerators(sources, *startblock, *blocks)
 			for i := *startblock; i < *blocks; i++ {
 				duration := measure(func() {
-					writeblock(f, *seed, *blocksize, i)
+					writeblock(f, sources, *blocksize, i)
 				})
 				accum += duration
 				blockCount++
@@ -116,9 +141,14 @@ func main() {
 		if *mode == "rw" || *mode == "r" {
 			var accum time.Duration
 			blockCount := int64(0)
+			sources := make([]chan []byte, sourcecount)
+			for i := int64(0); i < sourcecount; i++ {
+				sources[i] = make(chan []byte)
+			}
+			startGenerators(sources, *startblock, *blocks)
 			for i := *startblock; i < *blocks; i++ {
 				duration := measure(func() {
-					checkblock(f, *seed, *blocksize, i)
+					checkblock(f, sources, *blocksize, i)
 				})
 				accum += duration
 				blockCount++
