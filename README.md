@@ -1,6 +1,6 @@
-# diskstress
+# disktress
 
-Diskstress is a simple hard drive tester.
+Disktress is a simple hard drive tester.
 
 Currently, it will write a known, reproducable pattern to a file (or raw disk
 device), read it back, and verify that it read what it wrote.
