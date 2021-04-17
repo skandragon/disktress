@@ -2,18 +2,19 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"flag"
 	"fmt"
 	"os"
 	"runtime"
 	"time"
+
+	"golang.org/x/crypto/blake2b"
 )
 
 var (
 	seed       = flag.String("seed", "abcdefghijk", "Seed for 'random' data written to disk")
 	blocks     = flag.Int64("blocks", -1, "number of blocks to use")
-	blocksize  = flag.Int64("blocksize", 512, "block size, in bytes.  Must be a multiple of 32.")
+	blocksize  = flag.Int64("blocksize", 512, "block size, in bytes.  Must be a multiple of 64.")
 	filename   = flag.String("filename", "tmpfile", "target filename.  Intent is to write to a raw disk.")
 	startblock = flag.Int64("startblock", 0, "offset block to start writing and verifying.")
 	mode       = flag.String("mode", "rw", "rw = read+verify, r = verify, w = write")
@@ -23,18 +24,14 @@ var (
 )
 
 func makeblock(seed string, blocksize int64, block int64) []byte {
-	sha := sha256.New()
-	_, err := sha.Write([]byte(seed))
-	if err != nil {
-		panic(err)
-	}
-	_, err = sha.Write([]byte(fmt.Sprintf("%d", block)))
+	key := fmt.Sprintf("%s.%d", seed, block)
+	sha, err := blake2b.New512([]byte(key))
 	if err != nil {
 		panic(err)
 	}
 	buffer := make([]byte, blocksize)
-	for i := int64(0); i < blocksize/(256/8); i++ {
-		off := i * 256 / 8
+	for i := int64(0); i < blocksize/blake2b.Size; i++ {
+		off := i * blake2b.Size
 		b := sha.Sum([]byte{})
 		copy(buffer[off:], b)
 		sha.Write(b)
@@ -89,8 +86,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *blocksize%(256/32) != 0 {
-		fmt.Fprintf(os.Stderr, "blocksize must be a multiple of 32\n")
+	if *blocksize%64 != 0 {
+		fmt.Fprintf(os.Stderr, "blocksize must be a multiple of 64\n")
 		os.Exit(1)
 	}
 
